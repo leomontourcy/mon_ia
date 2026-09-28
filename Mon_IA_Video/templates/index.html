@@ -1,0 +1,263 @@
+<!DOCTYPE html>
+<html lang="fr">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>LEOai</title>
+        <meta name="description"
+              content="Transforme tes souvenirs en montages cinématiques avec LEOai.">
+        <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=Inter:wght@300;400;500;600&display=swap"
+              rel="stylesheet">
+        <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    </head>
+    <body>
+        <!-- ═══ Sidebar ═══ -->
+        <aside class="sidebar" id="sidebar">
+            <div class="sidebar-header">
+                <div class="logo-bubble">
+                    <img src="/static/logo_ai.png" alt="LEOai Logo" class="sidebar-logo-img">
+                </div>
+                <button class="close-sidebar-btn" onclick="toggleSidebar()" title="Réduire">☰</button>
+            </div>
+            <button class="new-project-btn" id="newProjectBtn" onclick="resetToLanding()">
+                <span class="plus-icon">+</span>
+                <span data-i18n="new_project">Nouveau Projet</span>
+            </button>
+            <div class="sidebar-divider"></div>
+            <div class="sidebar-section-title" data-i18n="recent">Récents</div>
+            <div class="project-list" id="projectList">
+                <!-- Rempli dynamiquement -->
+            </div>
+            <div class="user-profile">
+                <span class="user-name">👋 {{ username }}</span>
+                <div style="display: flex; gap: 8px; align-items: center;">
+                    <button class="settings-btn" onclick="openSettings()" title="Paramètres">⚙️</button>
+                    <a href="/logout" class="logout-btn" data-i18n="logout">Quitter</a>
+                </div>
+            </div>
+        </aside>
+        <!-- ═══ Main Content ═══ -->
+        <main class="main">
+            <button class="open-sidebar-btn" onclick="toggleSidebar()">☰</button>
+            <div class="main-inner">
+                <!-- ── Landing View ── -->
+                <div class="view" id="landingView">
+                    <div class="hero">
+                        <h1 class="hero-title">
+                            <span data-i18n="hero_title">Crée ton prochain</span>
+                            <br>
+                            <span data-i18n="hero_title_2">chef-d'œuvre</span>
+                        </h1>
+                        <p class="hero-subtitle">
+                            <span data-i18n="hero_subtitle">Glisse tes vidéos et photos pour créer un montage cinématique en un clic.</span>
+                        </p>
+                    </div>
+                    <div class="creator-bar" id="creatorBar">
+                        <div class="upload-area"
+                             id="uploadArea"
+                             onclick="document.getElementById('mediaInput').click()">
+                            <span class="clip-icon">📎</span>
+                            <span class="upload-label" id="uploadLabel" data-i18n="add_media">Ajouter des vidéos et photos</span>
+                            <input type="file"
+                                   id="mediaInput"
+                                   multiple
+                                   accept="video/*,image/*"
+                                   style="display:none">
+                        </div>
+                        <span class="file-count-badge" id="fileCountBadge" style="display:none">0</span>
+                        <button class="gen-btn" id="genBtn" disabled onclick="showOptions()">
+                            <span data-i18n="generate">Générer ✨</span>
+                        </button>
+                    </div>
+                    <div class="file-list-container"
+                         id="fileListContainer"
+                         style="display: none">
+                        <div class="file-list-header" data-i18n="pending_files">Fichiers en attente</div>
+                        <div class="file-list" id="fileList"></div>
+                    </div>
+                    <div class="options-panel hidden" id="optionsPanel">
+                        <div class="options-grid">
+                            <div class="option-group">
+                                <label class="option-label" data-i18n="montage_title">Titre du montage</label>
+                                <input type="text"
+                                       class="option-input"
+                                       id="titleInput"
+                                       placeholder="Ex: Vacances Montréal 🍁">
+                            </div>
+                            <div class="option-group">
+                                <label class="option-label" data-i18n="style">Style</label>
+                                <select class="option-input" id="styleInput">
+                                    <option value="Dynamique (Coupures rapides)">⚡ Dynamique</option>
+                                    <option value="Normal (Équilibré)" selected>🎬 Normal</option>
+                                    <option value="Chill (Plans longs + Fondus)">🌊 Chill</option>
+                                </select>
+                            </div>
+                            <div class="options-row">
+                                <div class="option-group">
+                                    <label class="option-label" data-i18n="format">Format de sortie</label>
+                                    <select class="option-input" id="formatInput">
+                                        <option value="9:16">📱 Vertical (TikTok/Reels)</option>
+                                        <option value="16:9">🖥️ Horizontal (YouTube)</option>
+                                    </select>
+                                </div>
+                                <div class="option-group">
+                                    <label class="option-label" data-i18n="filter">Filtre Cinématique</label>
+                                    <select class="option-input" id="filterInput">
+                                        <option value="aucun">Aucun (Original)</option>
+                                        <option value="cinematic">🎬 Cinématique (Contraste)</option>
+                                        <option value="vintage">📼 Vintage / VHS</option>
+                                        <option value="bw">🎞️ Noir & Blanc</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <div class="options-row"
+                                 style="grid-column: span 2;
+                                        display: flex;
+                                        flex-wrap: wrap;
+                                        gap: 15px;
+                                        margin-top: 5px">
+                                <label class="option-check">
+                                    <input type="checkbox" id="shuffleInput" checked>
+                                    <span data-i18n="shuffle">🔀 Mélanger</span>
+                                </label>
+                                <label class="option-check">
+                                    <input type="checkbox" id="muteInput">
+                                    <span data-i18n="mute">🔇 Couper le son</span>
+                                </label>
+                                <label class="option-check">
+                                    <input type="checkbox" id="introInput" checked>
+                                    <span data-i18n="intro">📝 Titre d'intro</span>
+                                </label>
+                                <label class="option-check">
+                                    <input type="checkbox" id="effectsInput" checked>
+                                    <span data-i18n="effects">✨ Effets (Flash/Zoom)</span>
+                                </label>
+                                <label class="option-check" title="Analyse l'image pour trouver l'action">
+                                    <input type="checkbox" id="aiExtractInput" checked>
+                                    <span data-i18n="ai_extract">🤖 Extraction IA</span>
+                                </label>
+                            </div>
+                            <div class="ai-prompt-area" style="margin-top: 15px;">
+                                <label class="option-label">
+                                    <span data-i18n="ai_prompt">🪄 Instructions IA Spécifiques (Optionnel)</span>
+                                </label>
+                                <textarea id="aiPromptInput"
+                                          class="option-input"
+                                          placeholder="Ex: Je veux un style dynamique en noir et blanc sans titre..."
+                                          style="min-height: 60px;
+                                                 resize: vertical"></textarea>
+                            </div>
+                            <div class="music-upload-area"
+                                 onclick="document.getElementById('musicInput').click()">
+                                <span class="music-upload-icon">🎵</span>
+                                <span class="music-upload-label" id="musicLabel" data-i18n="add_music">Ajouter une musique de fond</span>
+                                <input type="file" id="musicInput" accept="audio/*" style="display:none">
+                            </div>
+                            <button class="start-btn" id="startBtn" onclick="startMontage()">
+                                <span data-i18n="start_montage">✨ Lancer la création du chef-d'œuvre</span>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+                <!-- ── Processing View ── -->
+                <div class="view hidden" id="processingView">
+                    <div class="processing-container">
+                        <div class="processing-anim">
+                            <div class="processing-anim-inner">🎬</div>
+                        </div>
+                        <div class="processing-status" id="processingStatus">Préparation...</div>
+                        <div class="progress-track">
+                            <div class="progress-fill" id="progressFill"></div>
+                        </div>
+                        <div class="progress-percent" id="progressPercent">0%</div>
+                    </div>
+                </div>
+                <!-- ── Result View ── -->
+                <div class="view hidden" id="resultView">
+                    <div class="result-container">
+                        <div class="result-title">🎉 Montage Terminé !</div>
+                        <video class="result-video" id="resultVideo" controls>
+                        </video>
+                        <div class="result-actions">
+                            <a class="result-btn result-btn-primary" id="downloadBtn" download>📥 Télécharger</a>
+                            <button class="result-btn result-btn-secondary" onclick="resetToLanding()">
+                                🎬 <span data-i18n="new_project">Nouveau Projet</span>
+                            </button>
+                        </div>
+                        <div style="margin-top: 25px;
+                                    text-align: left;
+                                    background: rgba(255, 255, 255, 0.03);
+                                    padding: 20px;
+                                    border-radius: 16px;
+                                    border: 1px solid rgba(255,255,255,0.08)">
+                            <label style="display: block;
+                                          margin-bottom: 10px;
+                                          font-weight: 500;
+                                          font-size: 0.95em;
+                                          color: #fff">🪄 Demander une modification à l'IA</label>
+                            <textarea id="rePromptInput"
+                                      placeholder="Ex: Finalement mets-le en noir et blanc, rends-le plus dynamique et retire le texte..."
+                                      style="width: 100%;
+                                             min-height: 80px;
+                                             background: rgba(0,0,0,0.4);
+                                             border: 1px solid rgba(255,255,255,0.15);
+                                             border-radius: 10px;
+                                             padding: 12px;
+                                             color: #fff;
+                                             font-family: inherit;
+                                             resize: vertical;
+                                             font-size: 0.9em;
+                                             margin-bottom: 15px;
+                                             outline: none;
+                                             transition: border-color 0.3s"></textarea>
+                            <button class="result-btn result-btn-primary"
+                                    style="width: 100%;
+                                           background: linear-gradient(135deg, #a855f7, #ec4899)"
+                                    onclick="reGenerateWithPrompt()">✨ Re-générer avec l'IA</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </main>
+        <!-- ═══ Drop Overlay ═══ -->
+        <div class="drop-overlay" id="dropOverlay">
+            <div class="drop-message">📂 Dépose tes fichiers ici</div>
+        </div>
+        <!-- ═══ JavaScript ═══ -->
+        <script>
+            window.USER_LANGUAGE = "{{ user_language }}";
+            window.USER_THEME = "{{ user_theme }}";
+        </script>
+        <script src="{{ url_for('static', filename='app.js') }}"></script>
+        <!-- Modal Paramètres -->
+        <div class="modal-overlay" id="settingsModal">
+            <div class="settings-modal">
+                <div class="settings-header">
+                    <div class="settings-title" data-i18n="settings">Paramètres du compte</div>
+                    <button class="close-btn" onclick="closeSettings()">×</button>
+                </div>
+                <div class="option-group" style="margin-bottom: 16px;">
+                    <label class="option-label" data-i18n="language">Langue</label>
+                    <select class="option-input"
+                            id="langSelect"
+                            onchange="changeLanguage(this.value)">
+                        <option value="en">🇬🇧 English</option>
+                        <option value="zh">🇨🇳 中文 (Mandarin)</option>
+                        <option value="de">🇩🇪 Deutsch</option>
+                        <option value="es">🇪🇸 Español</option>
+                        <option value="fr">🇫🇷 Français</option>
+                    </select>
+                </div>
+                <div class="option-group">
+                    <label class="option-label" data-i18n="theme">Thème</label>
+                    <select class="option-input"
+                            id="themeSelect"
+                            onchange="changeTheme(this.value)">
+                        <option value="dark">🌙 Mode Sombre</option>
+                        <option value="light">☀️ Mode Clair</option>
+                    </select>
+                </div>
+            </div>
+        </div>
+    </body>
+</html>

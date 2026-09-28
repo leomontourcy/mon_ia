@@ -1,0 +1,6 @@
+gradio==4.19.2
+moviepy==1.0.3
+openai-whisper
+openai==1.12.0
+flask
+librosa

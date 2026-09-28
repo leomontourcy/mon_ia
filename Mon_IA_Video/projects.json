@@ -1,0 +1,51 @@
+[
+  {
+    "id": "b7260ba6-edf2-476e-abc6-3180bc5d67ba",
+    "name": "Toronto",
+    "style": "Dynamique (Coupures rapides)",
+    "date": "2026-09-25T09:11:00.283694",
+    "status": "completed",
+    "output_file": "montage_b7260ba6-edf2-476e-abc6-3180bc5d67ba.mp4",
+    "file_count": 11
+  },
+  {
+    "id": "a3ad6b8e-0837-4d32-8f5a-997a30be34e6",
+    "user_id": 1,
+    "name": "Toronto",
+    "style": "Normal (Équilibré)",
+    "date": "2026-09-25T18:28:30.409434",
+    "status": "completed",
+    "output_file": "montage_a3ad6b8e-0837-4d32-8f5a-997a30be34e6.mp4",
+    "file_count": 15
+  },
+  {
+    "id": "bda70d92-4f20-4f38-a77c-c28781e35eae",
+    "user_id": 1,
+    "name": "Torntooooo TESt",
+    "style": "Dynamique (Coupures rapides)",
+    "date": "2026-09-25T12:15:37.099041",
+    "status": "completed",
+    "output_file": "montage_bda70d92-4f20-4f38-a77c-c28781e35eae.mp4",
+    "file_count": 19
+  },
+  {
+    "id": "bda70d92-4f20-4f38-a77c-c28781e35eae",
+    "user_id": 1,
+    "name": "Torntooooo TESt",
+    "style": "Dynamique (Coupures rapides)",
+    "date": "2026-09-25T12:14:15.334295",
+    "status": "completed",
+    "output_file": "montage_bda70d92-4f20-4f38-a77c-c28781e35eae.mp4",
+    "file_count": 19
+  },
+  {
+    "id": "21730ab8-f144-4872-9078-5bc174ae6629",
+    "user_id": 1,
+    "name": "Toronto 2k26",
+    "style": "Dynamique (Coupures rapides)",
+    "date": "2026-09-25T11:59:52.598426",
+    "status": "completed",
+    "output_file": "montage_21730ab8-f144-4872-9078-5bc174ae6629.mp4",
+    "file_count": 20
+  }
+]
