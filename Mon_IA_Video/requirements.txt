@@ -1,6 +1,14 @@
-gradio==4.19.2
+flask
+flask-login
+flask-sqlalchemy
+python-dotenv
+numpy<2
+opencv-python<5
+opencv-python-headless<5
 moviepy==1.0.3
+Pillow
+librosa
 openai-whisper
 openai==1.12.0
-flask
-librosa
+gradio==4.19.2
+

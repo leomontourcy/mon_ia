@@ -84,6 +84,10 @@ def load_user(user_id):
     return User.query.get(int(user_id))
 
 
+with app.app_context():
+    db.create_all()
+
+
 # ─── Utilitaires Projets ─────────────────────────────────────────
 def load_projects(user_id=None):
     if os.path.exists(PROJECTS_FILE):
@@ -926,4 +930,4 @@ def save_settings():
     return jsonify({"success": True})
 
 if __name__ == "__main__":
-    app.run(host="127.0.0.1", port=7860, debug=False, threaded=True)
+    app.run(host="0.0.0.0", port=7860, debug=False, threaded=True)
