@@ -11,6 +11,7 @@ import cv2
 import moviepy.editor as mp
 import moviepy.video.fx.all as vfx
 import numpy as np
+from flask_socketio import SocketIO, emit, join_room
 from flask import (
     Flask,
     flash,
@@ -21,6 +22,7 @@ from flask import (
     request,
     send_from_directory,
     url_for,
+    session,
 )
 from flask_login import (
     LoginManager,
@@ -33,7 +35,20 @@ from flask_login import (
 from flask_sqlalchemy import SQLAlchemy
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 from werkzeug.security import check_password_hash, generate_password_hash
-
+from werkzeug.utils import secure_filename
+from flask_wtf.csrf import CSRFProtect
+from flask_talisman import Talisman
+from flask_limiter import Limiter
+from flask_limiter.util import get_remote_address
+import re
+import pyotp
+import qrcode
+import base64
+from io import BytesIO
+import pyotp
+import qrcode
+import base64
+from io import BytesIO
 try:
     import librosa
 
@@ -45,6 +60,17 @@ except ImportError:
 # ─── Configuration ───────────────────────────────────────────────
 app = Flask(__name__)
 app.config.from_object("config.Config")
+
+csrf = CSRFProtect(app)
+csp = {
+    'default-src': ['\'self\'', 'https://cdn.tailwindcss.com', 'https://fonts.googleapis.com', 'https://fonts.gstatic.com', 'https://cdnjs.cloudflare.com', '\'unsafe-inline\'', '\'unsafe-eval\''],
+    'img-src': ['\'self\'', 'data:', 'blob:'],
+    'media-src': ['\'self\'', 'blob:', 'data:'],
+    'connect-src': ['\'self\'']
+}
+talisman = Talisman(app, content_security_policy=csp, force_https=False)
+limiter = Limiter(get_remote_address, app=app, default_limits=["1000 per day", "100 per hour"])
+socketio = SocketIO(app, cors_allowed_origins="*", async_mode="threading")
 
 db = SQLAlchemy(app)
 login_manager = LoginManager()
@@ -60,7 +86,16 @@ os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 os.makedirs(OUTPUT_FOLDER, exist_ok=True)
 
 # Suivi de progression en mémoire (project_id -> dict)
-montage_progress = {}
+
+def update_progress(project_id, percent, status):
+    update_progress(project_id, percent, "status", None)
+
+@socketio.on('join')
+def on_join(data):
+    room = data.get('project_id')
+    if room:
+        join_room(room)
+
 
 
 # ─── Base de données et Modèles ──────────────────────────────────
@@ -68,6 +103,8 @@ class User(UserMixin, db.Model):
     id = db.Column(db.Integer, primary_key=True)
     username = db.Column(db.String(150), unique=True, nullable=False)
     password = db.Column(db.String(150), nullable=False)
+    totp_secret = db.Column(db.String(32), nullable=True)
+    totp_enabled = db.Column(db.Boolean, default=False)
     language = db.Column(db.String(10), default='fr')
     theme = db.Column(db.String(20), default='dark')
 
@@ -87,6 +124,19 @@ def load_user(user_id):
 with app.app_context():
     db.create_all()
 
+
+ALLOWED_EXTENSIONS = {'mp4', 'mov', 'avi', 'mkv', 'webm', 'jpg', 'jpeg', 'png', 'mp3', 'wav', 'aac'}
+
+def allowed_file(filename):
+    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+
+def is_valid_uuid(val):
+    return bool(re.match(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$', str(val)))
+
+def check_project_ownership(project_id):
+    if not is_valid_uuid(project_id): return False
+    projects = load_projects()
+    return any(p["id"] == project_id for p in projects)
 
 # ─── Utilitaires Projets ─────────────────────────────────────────
 def load_projects(user_id=None):
@@ -329,13 +379,7 @@ def process_montage(
 ):
     """Traitement du montage dans un thread séparé avec mise à jour de la progression."""
     try:
-        montage_progress[project_id] = {
-            "status": "⏳ Analyse et tri des médias...",
-            "percent": 5,
-            "done": False,
-            "error": None,
-            "output": None,
-        }
+        update_progress(project_id, 5, "⏳ Analyse et tri des médias...")
 
         clips = []
 
@@ -365,13 +409,7 @@ def process_montage(
         ]
 
         if not valid_files:
-            montage_progress[project_id] = {
-                "status": "❌ Aucun média valide trouvé.",
-                "percent": 0,
-                "done": True,
-                "error": "no_files",
-                "output": None,
-            }
+            update_progress(project_id, 0, "❌ Aucun média valide trouvé.")
             return
 
         if shuffle_order:
@@ -383,13 +421,7 @@ def process_montage(
         # ── Analyse musicale IA ──
         music_analysis = None
         if music_path and os.path.exists(music_path) and LIBROSA_AVAILABLE:
-            montage_progress[project_id] = {
-                "status": "🧠 L'IA analyse le rythme de ta musique...",
-                "percent": 8,
-                "done": False,
-                "error": None,
-                "output": None,
-            }
+            update_progress(project_id, 8, "🧠 L'IA analyse le rythme de ta musique...")
             music_analysis = analyze_music(music_path, len(valid_files), style)
             if music_analysis:
                 print(f"🎵 Tempo détecté : {music_analysis['tempo']:.0f} BPM")
@@ -418,13 +450,7 @@ def process_montage(
 
         for i, path in enumerate(valid_files):
             percent = 12 + int((i / len(valid_files)) * 50)
-            montage_progress[project_id] = {
-                "status": f"⚙️ Traitement du fichier {i + 1}/{len(valid_files)}...",
-                "percent": percent,
-                "done": False,
-                "error": None,
-                "output": None,
-            }
+            update_progress(project_id, percent, f"⚙️ Traitement du fichier {i + 1}/{len(valid_files)}...")
 
             # Durée du clip : synchronisée sur les beats si possible
             if music_analysis and i < len(music_analysis["clip_durations"]):
@@ -495,19 +521,13 @@ def process_montage(
                 continue
 
         if not raw_clips:
-            montage_progress[project_id] = {
-                "status": "❌ Aucun média valide n'a pu être utilisé.",
-                "percent": 0,
-                "done": True,
-                "error": "no_valid_clips",
-                "output": None,
-            }
+            update_progress(project_id, 0, "❌ Aucun média valide n'a pu être utilisé.")
             return
 
         title_exists = bool(title and title.strip() and use_intro)
         if title_exists:
-            montage_progress[project_id]["status"] = "🎬 Création de l'écran titre..."
-            montage_progress[project_id]["percent"] = 68
+            update_progress(project_id, montage_progress[project_id]["percent"], "🎬 Création de l'écran titre...")
+            update_progress(project_id, 68, montage_progress[project_id]["status"])
             title_clip = create_cinematic_title(
                 title.strip(), raw_clips[0], size=(target_w, target_h), duration=2.5
             )
@@ -519,13 +539,7 @@ def process_montage(
                 c = c.crossfadein(transition_time)
             clips.append(c)
 
-        montage_progress[project_id] = {
-            "status": f"🎬 Assemblage de {len(clips)} plans...",
-            "percent": 75,
-            "done": False,
-            "error": None,
-            "output": None,
-        }
+        update_progress(project_id, 75, f"🎬 Assemblage de {len(clips)} plans...")
 
         if transition_time > 0:
             final_video = mp.concatenate_videoclips(
@@ -539,7 +553,7 @@ def process_montage(
             montage_progress[project_id][
                 "status"
             ] = "🎵 Mixage intelligent de la musique..."
-            montage_progress[project_id]["percent"] = 82
+            update_progress(project_id, 82, montage_progress[project_id]["status"])
             try:
                 music = mp.AudioFileClip(music_path)
 
@@ -586,13 +600,7 @@ def process_montage(
         output_filename = f"montage_{project_id}.mp4"
         output_path = os.path.join(OUTPUT_FOLDER, output_filename)
 
-        montage_progress[project_id] = {
-            "status": "⚙️ Rendu final HD (patience ça va être magnifique)...",
-            "percent": 88,
-            "done": False,
-            "error": None,
-            "output": None,
-        }
+        update_progress(project_id, 88, "⚙️ Rendu final HD (patience ça va être magnifique)...")
 
         final_video.write_videofile(
             output_path,
@@ -605,13 +613,7 @@ def process_montage(
             logger=None,
         )
 
-        montage_progress[project_id] = {
-            "status": "✅ Chef-d'œuvre terminé ! 🌴",
-            "percent": 100,
-            "done": True,
-            "error": None,
-            "output": output_filename,
-        }
+        update_progress(project_id, 100, "✅ Chef-d'œuvre terminé ! 🌴")
 
         # Mettre à jour le projet dans l'historique
         projects = load_projects(user_id=user_id)
@@ -623,13 +625,7 @@ def process_montage(
         save_projects(projects, user_id=user_id)
 
     except Exception as e:
-        montage_progress[project_id] = {
-            "status": f"❌ Erreur : {str(e)}",
-            "percent": 0,
-            "done": True,
-            "error": str(e),
-            "output": None,
-        }
+        update_progress(project_id, 0, f"❌ Erreur {str(e)}")
 
 
 # ─── Routes Flask ────────────────────────────────────────────────
@@ -642,8 +638,12 @@ def login():
         password = request.form.get("password")
         user = User.query.filter_by(username=username).first()
         if user and check_password_hash(user.password, password):
-            login_user(user)
-            return redirect(url_for("index"))
+            if user.totp_enabled:
+                session['verify_2fa_user_id'] = user.id
+                return redirect(url_for('verify_2fa'))
+            else:
+                login_user(user)
+                return redirect(url_for("index"))
         flash("Nom d'utilisateur ou mot de passe incorrect.", "error")
     return render_template("login.html")
 
@@ -656,15 +656,63 @@ def register():
         if User.query.filter_by(username=username).first():
             flash("Ce nom d'utilisateur existe déjà.", "error")
         else:
+            totp_secret = pyotp.random_base32()
             new_user = User(
                 username=username,
                 password=generate_password_hash(password, method="pbkdf2:sha256"),
+                totp_secret=totp_secret,
+                totp_enabled=False
             )
             db.session.add(new_user)
             db.session.commit()
-            login_user(new_user)
-            return redirect(url_for("index"))
+            session['setup_2fa_user_id'] = new_user.id
+            return redirect(url_for("setup_2fa"))
     return render_template("register.html")
+
+@app.route("/setup_2fa", methods=["GET", "POST"])
+def setup_2fa():
+    if 'setup_2fa_user_id' not in session:
+        return redirect(url_for("login"))
+    user = User.query.get(session['setup_2fa_user_id'])
+    
+    if request.method == "POST":
+        token = request.form.get("token")
+        totp = pyotp.TOTP(user.totp_secret)
+        if totp.verify(token):
+            user.totp_enabled = True
+            db.session.commit()
+            session.pop('setup_2fa_user_id', None)
+            login_user(user)
+            return redirect(url_for("index"))
+        else:
+            flash("Code incorrect. Veuillez réessayer.", "error")
+            
+    totp = pyotp.TOTP(user.totp_secret)
+    uri = totp.provisioning_uri(name=user.username, issuer_name="LEOai")
+    img = qrcode.make(uri)
+    buffered = BytesIO()
+    img.save(buffered, format="PNG")
+    img_data = base64.b64encode(buffered.getvalue()).decode("utf-8")
+    
+    return render_template("setup_2fa.html", qr_code=img_data)
+
+@app.route("/verify_2fa", methods=["GET", "POST"])
+def verify_2fa():
+    if 'verify_2fa_user_id' not in session:
+        return redirect(url_for("login"))
+    user = User.query.get(session['verify_2fa_user_id'])
+    
+    if request.method == "POST":
+        token = request.form.get("token")
+        totp = pyotp.TOTP(user.totp_secret)
+        if totp.verify(token):
+            session.pop('verify_2fa_user_id', None)
+            login_user(user)
+            return redirect(url_for("index"))
+        else:
+            flash("Code incorrect. Veuillez réessayer.", "error")
+            
+    return render_template("verify_2fa.html")
 
 
 @app.route("/logout")
@@ -694,8 +742,12 @@ def get_projects():
 
 @app.route("/api/upload", methods=["POST"])
 @login_required
+@limiter.limit("50 per minute")
 def upload_files():
     project_id = request.form.get("project_id", str(uuid.uuid4()))
+    if not is_valid_uuid(project_id):
+        return jsonify({"error": "ID de projet invalide"}), 400
+        
     file_type = request.form.get("type", "media")  # 'media' ou 'music'
 
     project_dir = os.path.join(UPLOAD_FOLDER, project_id)
@@ -703,10 +755,15 @@ def upload_files():
 
     saved = []
     for f in request.files.getlist("files"):
+        if not f.filename or not allowed_file(f.filename):
+            continue
+            
+        secure_name = secure_filename(f.filename)
         if file_type == "music":
-            filename = "_music_" + f.filename
+            filename = "_music_" + secure_name
         else:
-            filename = f.filename
+            filename = secure_name
+            
         path = os.path.join(project_dir, filename)
         f.save(path)
         saved.append({"name": filename, "type": file_type})
@@ -717,9 +774,10 @@ def upload_files():
 @app.route("/api/upload/<project_id>/<filename>", methods=["DELETE"])
 @login_required
 def delete_file(project_id, filename):
-    if ".." in filename or "/" in filename or "\\" in filename:
-        return jsonify({"error": "Nom de fichier invalide"}), 400
+    if not is_valid_uuid(project_id):
+        return jsonify({"error": "ID de projet invalide"}), 400
 
+    filename = secure_filename(filename)
     project_dir = os.path.join(UPLOAD_FOLDER, project_id)
     path = os.path.join(project_dir, filename)
     if os.path.exists(path):
@@ -730,9 +788,12 @@ def delete_file(project_id, filename):
 
 @app.route("/api/start-montage", methods=["POST"])
 @login_required
+@limiter.limit("10 per minute")
 def start_montage():
     data = request.json
     project_id = data["project_id"]
+    if not is_valid_uuid(project_id):
+        return jsonify({"error": "ID de projet invalide"}), 400
 
     # ── Analyse du prompt IA (Simulation NLP par mots-clés) ──
     prompt = data.get("prompt", "").lower()
@@ -890,7 +951,14 @@ def get_progress(project_id):
 
 
 @app.route("/api/project/<project_id>", methods=["DELETE"])
+@login_required
 def delete_project(project_id):
+    if not is_valid_uuid(project_id):
+        return jsonify({"error": "ID de projet invalide"}), 400
+        
+    if not check_project_ownership(project_id):
+        return jsonify({"error": "Non autorisé"}), 403
+
     projects = load_projects()
     projects = [p for p in projects if p["id"] != project_id]
     save_projects(projects)
@@ -930,4 +998,4 @@ def save_settings():
     return jsonify({"success": True})
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=7860, debug=False, threaded=True)
+    socketio.run(app, host="0.0.0.0", port=7860, debug=False)

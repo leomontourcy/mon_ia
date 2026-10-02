@@ -19,3 +19,10 @@ __pycache__/
 # IDEs
 .vscode/
 .idea/
+
+# Uploads and Outputs
+uploads/
+outputs/
+*.mp4
+*.MOV
+*.mp3

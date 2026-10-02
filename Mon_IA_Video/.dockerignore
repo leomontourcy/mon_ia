@@ -1,0 +1,17 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.env
+.venv
+instance/
+uploads/
+outputs/
+database.db
+projects.json
+.DS_Store
+.git/
+.gitignore

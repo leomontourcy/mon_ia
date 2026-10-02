@@ -3,7 +3,7 @@
     <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Connexion - LEOai</title>
+        <title>Configuration 2FA - LEOai</title>
         <link rel="preconnect" href="https://fonts.googleapis.com">
         <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
         <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=Outfit:wght@400;600;700;800&display=swap" rel="stylesheet">
@@ -168,15 +168,39 @@
             border: 1px solid rgba(239, 68, 68, 0.2);
         }
         </style>
+        <style>
+        .qr-container {
+            background: white;
+            padding: 10px;
+            border-radius: var(--radius-sm);
+            margin: 0 auto 20px;
+            display: inline-block;
+        }
+        .qr-container img {
+            width: 200px;
+            height: 200px;
+        }
+        .instruction-text {
+            color: var(--text-secondary);
+            font-size: 0.9em;
+            margin-bottom: 20px;
+            line-height: 1.5;
+        }
+        </style>
     </head>
     <body>
         <div class="bg-glow"></div>
-        <div class="auth-card">
+        <div class="auth-card" style="max-width: 450px;">
             <div class="logo-bubble">
                 <img src="/static/logo_ai.png" alt="LEOai" class="logo-img">
             </div>
-            <h1 class="title">Te revoilà !</h1>
-            <p class="subtitle">Connecte-toi pour retrouver tes créations.</p>
+            <h1 class="title">Sécurisons ton compte</h1>
+            <p class="instruction-text">Scanne ce QR code avec Google Authenticator, Authy ou l'app Appareil Photo, puis entre le code à 6 chiffres généré pour activer l'authentification à double facteur.</p>
+            
+            <div class="qr-container">
+                <img src="data:image/png;base64,{{ qr_code }}" alt="QR Code 2FA">
+            </div>
+
             {% with messages = get_flashed_messages() %}
                 {% if messages %}
                     <div class="flash-messages">
@@ -187,27 +211,23 @@
                     </div>
                 {% endif %}
             {% endwith %}
-            <form method="POST" action="/login">
+            <form method="POST" action="/setup_2fa">
                 <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-                <div class="form-group">
-                    <label class="form-label">Pseudo</label>
+                <div class="form-group" style="text-align: center;">
+                    <label class="form-label" style="text-align: center;">Code à 6 chiffres</label>
                     <input type="text"
-                           name="username"
+                           name="token"
                            class="form-input"
                            required
-                           placeholder="Ton pseudo">
+                           autocomplete="one-time-code"
+                           pattern="[0-9]*"
+                           inputmode="numeric"
+                           maxlength="6"
+                           style="text-align: center; font-size: 1.5em; letter-spacing: 5px; font-weight: bold;"
+                           placeholder="000000">
                 </div>
-                <div class="form-group">
-                    <label class="form-label">Mot de passe</label>
-                    <input type="password"
-                           name="password"
-                           class="form-input"
-                           required
-                           placeholder="••••••••">
-                </div>
-                <button type="submit" class="submit-btn">Se connecter</button>
+                <button type="submit" class="submit-btn">Activer la sécurité</button>
             </form>
-            <a href="/register" class="switch-link">Tu n'as pas de compte ? S'inscrire</a>
         </div>
     </body>
 </html>

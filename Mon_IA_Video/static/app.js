@@ -155,7 +155,7 @@
             localStorage.setItem('leoai_lang', lang);
             fetch('/api/save-settings', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: { 'Content-Type': 'application/json', 'X-CSRFToken': csrfToken },
                 body: JSON.stringify({ language: lang })
             });
             applyLanguage(lang);
@@ -165,7 +165,7 @@
             localStorage.setItem('leoai_theme', theme);
             fetch('/api/save-settings', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: { 'Content-Type': 'application/json', 'X-CSRFToken': csrfToken },
                 body: JSON.stringify({ theme: theme })
             });
             document.documentElement.setAttribute('data-theme', theme);
@@ -197,6 +197,8 @@
         window.addEventListener('click', e => {
             if (e.target === $('settingsModal')) closeSettings();
         });
+
+        const csrfToken = document.querySelector('meta[name="csrf-token"]') ? document.querySelector('meta[name="csrf-token"]').content : '';
 
         // ── État ──────────────────────────────────────────
         let currentProjectId = null;
@@ -286,7 +288,7 @@
 
         async function deleteProject(id) {
             try {
-                await fetch('/api/project/' + id, { method: 'DELETE' });
+                await fetch('/api/project/' + id, { method: 'DELETE', headers: { 'X-CSRFToken': csrfToken } });
                 if (currentProjectId === id) {
                     currentProjectId = null;
                     resetToLanding();
@@ -336,7 +338,7 @@
             for (const f of files) formData.append('files', f);
 
             try {
-                const res = await fetch('/api/upload', { method: 'POST', body: formData });
+                const res = await fetch('/api/upload', { method: 'POST', body: formData, headers: { 'X-CSRFToken': csrfToken } });
                 const data = await res.json();
                 
                 data.files.forEach(f => {
@@ -380,7 +382,7 @@
         async function deleteFile(filename) {
             if (!currentProjectId) return;
             try {
-                const res = await fetch(`/api/upload/${currentProjectId}/${encodeURIComponent(filename)}`, { method: 'DELETE' });
+                const res = await fetch(`/api/upload/${currentProjectId}/${encodeURIComponent(filename)}`, { method: 'DELETE', headers: { 'X-CSRFToken': csrfToken } });
                 if (res.ok) {
                     currentFiles = currentFiles.filter(f => f !== filename);
                     uploadedFileCount = currentFiles.length;
@@ -413,7 +415,7 @@
             formData.append('files', file);
 
             try {
-                await fetch('/api/upload', { method: 'POST', body: formData });
+                await fetch('/api/upload', { method: 'POST', body: formData, headers: { 'X-CSRFToken': csrfToken } });
                 $('musicLabel').textContent = '🎵 ' + file.name;
                 $('musicLabel').classList.add('music-name');
             } catch(e) {
@@ -470,7 +472,7 @@
 
                 await fetch('/api/start-montage', {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
+                    headers: { 'Content-Type': 'application/json', 'X-CSRFToken': csrfToken },
                     body: JSON.stringify(payload)
                 });
                 startPolling(currentProjectId);
@@ -493,32 +495,39 @@
         }
 
         // ── Polling Progression ──────────────────────────
+        const socket = io();
+
+        socket.on('progress', (data) => {
+            if (data.project_id !== currentProjectId) return;
+            
+            $('processingStatus').textContent = data.status || 'En cours...';
+            $('progressFill').style.width = (data.percent || 0) + '%';
+            $('progressPercent').textContent = (data.percent || 0) + '%';
+
+            if (data.done) {
+                if (data.output) {
+                    showResult(data.output);
+                } else if (data.error) {
+                    alert('Erreur : ' + data.status);
+                    resetToLanding();
+                }
+                loadProjects();
+            }
+        });
+
         function startPolling(projectId) {
-            if (pollingInterval) clearInterval(pollingInterval);
-
-            pollingInterval = setInterval(async () => {
-                try {
-                    const res = await fetch('/api/progress/' + projectId);
-                    const data = await res.json();
-
-                    $('processingStatus').textContent = data.status || 'En cours...';
-                    $('progressFill').style.width = (data.percent || 0) + '%';
-                    $('progressPercent').textContent = (data.percent || 0) + '%';
-
-                    if (data.done) {
-                        clearInterval(pollingInterval);
-                        pollingInterval = null;
-
-                        if (data.output) {
-                            showResult(data.output);
-                        } else if (data.error) {
-                            alert('Erreur : ' + data.status);
-                            resetToLanding();
-                        }
-                        loadProjects();
-                    }
-                } catch(e) { console.error('Erreur polling:', e); }
-            }, 600);
+            if (pollingInterval) { clearInterval(pollingInterval); pollingInterval = null; }
+            socket.emit('join', { project_id: projectId });
+            
+            // Fetch initial state just in case
+            fetch('/api/progress/' + projectId).then(res => res.json()).then(data => {
+                if (data.status) $('processingStatus').textContent = data.status;
+                if (data.percent) {
+                    $('progressFill').style.width = data.percent + '%';
+                    $('progressPercent').textContent = data.percent + '%';
+                }
+                if (data.done && data.output) showResult(data.output);
+            }).catch(e => console.error(e));
         }
 
         // ── Affichage Résultat ───────────────────────────
