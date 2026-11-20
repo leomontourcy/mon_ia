@@ -11,7 +11,7 @@ Flask-WTF
 Flask-Talisman
 Flask-Limiter
 pyotp
-qrcode
+qrcode[pil]
 Flask-SocketIO
-eventlet
+simple-websocket
 gunicorn

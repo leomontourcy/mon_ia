@@ -14,6 +14,7 @@ import numpy as np
 from flask_socketio import SocketIO, emit, join_room
 from flask import (
     Flask,
+    abort,
     flash,
     jsonify,
     make_response,
@@ -45,10 +46,7 @@ import pyotp
 import qrcode
 import base64
 from io import BytesIO
-import pyotp
-import qrcode
-import base64
-from io import BytesIO
+
 try:
     import librosa
 
@@ -70,7 +68,8 @@ csp = {
 }
 talisman = Talisman(app, content_security_policy=csp, force_https=False)
 limiter = Limiter(get_remote_address, app=app, default_limits=["1000 per day", "100 per hour"])
-socketio = SocketIO(app, cors_allowed_origins="*", async_mode="threading")
+# Pas de cors_allowed_origins="*" : seules les connexions de la même origine sont acceptées
+socketio = SocketIO(app, async_mode="threading")
 
 db = SQLAlchemy(app)
 login_manager = LoginManager()
@@ -80,22 +79,36 @@ login_manager.login_view = "login"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 UPLOAD_FOLDER = os.path.join(BASE_DIR, "uploads")
 OUTPUT_FOLDER = os.path.join(BASE_DIR, "outputs")
-PROJECTS_FILE = os.path.join(BASE_DIR, "projects.json")
+PROJECTS_FILE = os.environ.get("PROJECTS_FILE", os.path.join(BASE_DIR, "projects.json"))
 
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 os.makedirs(OUTPUT_FOLDER, exist_ok=True)
 
-# Suivi de progression en mémoire (project_id -> dict)
+# Suivi de progression en mémoire (project_id -> état), partagé entre les threads
+montage_progress = {}
+progress_lock = threading.Lock()
 
-def update_progress(project_id, percent, status):
-    update_progress(project_id, percent, "status", None)
 
-@socketio.on('join')
+def update_progress(project_id, percent, status, done=False, error=None, output=None):
+    """Enregistre l'avancement d'un montage et le pousse au navigateur via Socket.IO."""
+    state = {
+        "project_id": project_id,
+        "percent": percent,
+        "status": status,
+        "done": done,
+        "error": error,
+        "output": output,
+    }
+    with progress_lock:
+        montage_progress[project_id] = state
+    socketio.emit("progress", state, to=project_id)
+
+
+@socketio.on("join")
 def on_join(data):
-    room = data.get('project_id')
-    if room:
+    room = (data or {}).get("project_id")
+    if room and current_user.is_authenticated and user_owns_project(room):
         join_room(room)
-
 
 
 # ─── Base de données et Modèles ──────────────────────────────────
@@ -118,7 +131,7 @@ class User(UserMixin, db.Model):
 
 @login_manager.user_loader
 def load_user(user_id):
-    return User.query.get(int(user_id))
+    return db.session.get(User, int(user_id))
 
 
 with app.app_context():
@@ -137,6 +150,32 @@ def check_project_ownership(project_id):
     if not is_valid_uuid(project_id): return False
     projects = load_projects()
     return any(p["id"] == project_id for p in projects)
+
+OWNER_FILE = ".owner"
+
+
+def set_upload_owner(project_id, user_id):
+    with open(os.path.join(UPLOAD_FOLDER, project_id, OWNER_FILE), "w", encoding="utf-8") as f:
+        f.write(str(user_id))
+
+
+def get_upload_owner(project_id):
+    owner_path = os.path.join(UPLOAD_FOLDER, project_id, OWNER_FILE)
+    if not os.path.isfile(owner_path):
+        return None
+    with open(owner_path, "r", encoding="utf-8") as f:
+        return f.read().strip()
+
+
+def user_owns_project(project_id):
+    """Vérifie que le projet appartient à l'utilisateur connecté (protection contre les IDOR)."""
+    if not is_valid_uuid(project_id) or not current_user.is_authenticated:
+        return False
+    owner = get_upload_owner(project_id)
+    if owner is not None:
+        return owner == str(current_user.id)
+    return check_project_ownership(project_id)
+
 
 # ─── Utilitaires Projets ─────────────────────────────────────────
 def load_projects(user_id=None):
@@ -195,9 +234,17 @@ def create_cinematic_title(text, background_clip, size=(720, 1280), duration=2.5
     img = enhancer
 
     d = ImageDraw.Draw(img)
-    try:
-        font = ImageFont.truetype("/System/Library/Fonts/Supplemental/Avenir.ttc", 100)
-    except Exception:
+    font = None
+    for font_path in (
+        "/System/Library/Fonts/Supplemental/Avenir.ttc",  # macOS
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",  # Linux / Docker
+    ):
+        try:
+            font = ImageFont.truetype(font_path, 100)
+            break
+        except OSError:
+            continue
+    if font is None:
         font = ImageFont.load_default()
 
     try:
@@ -409,7 +456,7 @@ def process_montage(
         ]
 
         if not valid_files:
-            update_progress(project_id, 0, "❌ Aucun média valide trouvé.")
+            update_progress(project_id, 0, "❌ Aucun média valide trouvé.", done=True, error=True)
             return
 
         if shuffle_order:
@@ -521,7 +568,7 @@ def process_montage(
                 continue
 
         if not raw_clips:
-            update_progress(project_id, 0, "❌ Aucun média valide n'a pu être utilisé.")
+            update_progress(project_id, 0, "❌ Aucun média valide n'a pu être utilisé.", done=True, error=True)
             return
 
         title_exists = bool(title and title.strip() and use_intro)
@@ -613,9 +660,7 @@ def process_montage(
             logger=None,
         )
 
-        update_progress(project_id, 100, "✅ Chef-d'œuvre terminé ! 🌴")
-
-        # Mettre à jour le projet dans l'historique
+        # Mettre à jour le projet dans l'historique avant de prévenir le navigateur
         projects = load_projects(user_id=user_id)
         for p in projects:
             if p["id"] == project_id:
@@ -624,94 +669,113 @@ def process_montage(
                 break
         save_projects(projects, user_id=user_id)
 
+        update_progress(
+            project_id, 100, "✅ Chef-d'œuvre terminé ! 🌴", done=True, output=output_filename
+        )
+
     except Exception as e:
-        update_progress(project_id, 0, f"❌ Erreur {str(e)}")
+        update_progress(project_id, 0, f"❌ Erreur : {e}", done=True, error=True)
 
 
 # ─── Routes Flask ────────────────────────────────────────────────
 
 
+USERNAME_PATTERN = re.compile(r"[A-Za-z0-9_.-]{3,30}")
+MIN_PASSWORD_LENGTH = 8
+
+
 @app.route("/login", methods=["GET", "POST"])
+@limiter.limit("10 per minute", methods=["POST"])
 def login():
     if request.method == "POST":
-        username = request.form.get("username")
-        password = request.form.get("password")
+        username = (request.form.get("username") or "").strip()
+        password = request.form.get("password") or ""
         user = User.query.filter_by(username=username).first()
         if user and check_password_hash(user.password, password):
             if user.totp_enabled:
-                session['verify_2fa_user_id'] = user.id
-                return redirect(url_for('verify_2fa'))
-            else:
-                login_user(user)
-                return redirect(url_for("index"))
+                session["verify_2fa_user_id"] = user.id
+                return redirect(url_for("verify_2fa"))
+            # La 2FA est obligatoire : un compte dont la configuration n'a pas été terminée y est renvoyé
+            session["setup_2fa_user_id"] = user.id
+            return redirect(url_for("setup_2fa"))
         flash("Nom d'utilisateur ou mot de passe incorrect.", "error")
     return render_template("login.html")
 
 
 @app.route("/register", methods=["GET", "POST"])
+@limiter.limit("5 per minute", methods=["POST"])
 def register():
     if request.method == "POST":
-        username = request.form.get("username")
-        password = request.form.get("password")
-        if User.query.filter_by(username=username).first():
+        username = (request.form.get("username") or "").strip()
+        password = request.form.get("password") or ""
+        if not USERNAME_PATTERN.fullmatch(username):
+            flash("Nom d'utilisateur invalide : 3 à 30 caractères (lettres, chiffres, . _ -).", "error")
+        elif len(password) < MIN_PASSWORD_LENGTH:
+            flash(f"Le mot de passe doit contenir au moins {MIN_PASSWORD_LENGTH} caractères.", "error")
+        elif User.query.filter_by(username=username).first():
             flash("Ce nom d'utilisateur existe déjà.", "error")
         else:
-            totp_secret = pyotp.random_base32()
             new_user = User(
                 username=username,
                 password=generate_password_hash(password, method="pbkdf2:sha256"),
-                totp_secret=totp_secret,
-                totp_enabled=False
+                totp_secret=pyotp.random_base32(),
+                totp_enabled=False,
             )
             db.session.add(new_user)
             db.session.commit()
-            session['setup_2fa_user_id'] = new_user.id
+            session["setup_2fa_user_id"] = new_user.id
             return redirect(url_for("setup_2fa"))
     return render_template("register.html")
 
+
+def _pending_user(session_key):
+    """Retourne l'utilisateur en attente de 2FA, ou None si la session est invalide."""
+    user_id = session.get(session_key)
+    user = db.session.get(User, user_id) if user_id else None
+    if user is None:
+        session.pop(session_key, None)
+    return user
+
+
 @app.route("/setup_2fa", methods=["GET", "POST"])
+@limiter.limit("10 per minute", methods=["POST"])
 def setup_2fa():
-    if 'setup_2fa_user_id' not in session:
+    user = _pending_user("setup_2fa_user_id")
+    if user is None:
         return redirect(url_for("login"))
-    user = User.query.get(session['setup_2fa_user_id'])
-    
+
     if request.method == "POST":
-        token = request.form.get("token")
-        totp = pyotp.TOTP(user.totp_secret)
-        if totp.verify(token):
+        token = (request.form.get("token") or "").strip()
+        if pyotp.TOTP(user.totp_secret).verify(token, valid_window=1):
             user.totp_enabled = True
             db.session.commit()
-            session.pop('setup_2fa_user_id', None)
+            session.pop("setup_2fa_user_id", None)
             login_user(user)
             return redirect(url_for("index"))
-        else:
-            flash("Code incorrect. Veuillez réessayer.", "error")
-            
-    totp = pyotp.TOTP(user.totp_secret)
-    uri = totp.provisioning_uri(name=user.username, issuer_name="LEOai")
-    img = qrcode.make(uri)
+        flash("Code incorrect. Veuillez réessayer.", "error")
+
+    uri = pyotp.TOTP(user.totp_secret).provisioning_uri(name=user.username, issuer_name="LEOai")
     buffered = BytesIO()
-    img.save(buffered, format="PNG")
+    qrcode.make(uri).save(buffered, format="PNG")
     img_data = base64.b64encode(buffered.getvalue()).decode("utf-8")
-    
     return render_template("setup_2fa.html", qr_code=img_data)
 
+
 @app.route("/verify_2fa", methods=["GET", "POST"])
+@limiter.limit("10 per minute", methods=["POST"])
 def verify_2fa():
-    if 'verify_2fa_user_id' not in session:
+    user = _pending_user("verify_2fa_user_id")
+    if user is None:
         return redirect(url_for("login"))
-    user = User.query.get(session['verify_2fa_user_id'])
-    
+
     if request.method == "POST":
-        token = request.form.get("token")
-        totp = pyotp.TOTP(user.totp_secret)
-        if totp.verify(token):
-            session.pop('verify_2fa_user_id', None)
+        token = (request.form.get("token") or "").strip()
+        if pyotp.TOTP(user.totp_secret).verify(token, valid_window=1):
+            session.pop("verify_2fa_user_id", None)
             login_user(user)
             return redirect(url_for("index"))
-        else:
-            flash("Code incorrect. Veuillez réessayer.", "error")
-            
+        flash("Code incorrect. Veuillez réessayer.", "error")
+
     return render_template("verify_2fa.html")
 
 
@@ -744,28 +808,27 @@ def get_projects():
 @login_required
 @limiter.limit("50 per minute")
 def upload_files():
-    project_id = request.form.get("project_id", str(uuid.uuid4()))
+    project_id = request.form.get("project_id") or str(uuid.uuid4())
     if not is_valid_uuid(project_id):
         return jsonify({"error": "ID de projet invalide"}), 400
-        
-    file_type = request.form.get("type", "media")  # 'media' ou 'music'
 
     project_dir = os.path.join(UPLOAD_FOLDER, project_id)
-    os.makedirs(project_dir, exist_ok=True)
+    if os.path.exists(project_dir):
+        if not user_owns_project(project_id):
+            return jsonify({"error": "Non autorisé"}), 403
+    else:
+        os.makedirs(project_dir)
+        set_upload_owner(project_id, current_user.id)
+
+    file_type = "music" if request.form.get("type") == "music" else "media"
 
     saved = []
     for f in request.files.getlist("files"):
         if not f.filename or not allowed_file(f.filename):
             continue
-            
         secure_name = secure_filename(f.filename)
-        if file_type == "music":
-            filename = "_music_" + secure_name
-        else:
-            filename = secure_name
-            
-        path = os.path.join(project_dir, filename)
-        f.save(path)
+        filename = "_music_" + secure_name if file_type == "music" else secure_name
+        f.save(os.path.join(project_dir, filename))
         saved.append({"name": filename, "type": file_type})
 
     return jsonify({"project_id": project_id, "files": saved, "count": len(saved)})
@@ -774,13 +837,12 @@ def upload_files():
 @app.route("/api/upload/<project_id>/<filename>", methods=["DELETE"])
 @login_required
 def delete_file(project_id, filename):
-    if not is_valid_uuid(project_id):
-        return jsonify({"error": "ID de projet invalide"}), 400
+    if not user_owns_project(project_id):
+        return jsonify({"error": "Non autorisé"}), 403
 
     filename = secure_filename(filename)
-    project_dir = os.path.join(UPLOAD_FOLDER, project_id)
-    path = os.path.join(project_dir, filename)
-    if os.path.exists(path):
+    path = os.path.join(UPLOAD_FOLDER, project_id, filename)
+    if filename and not filename.startswith(".") and os.path.isfile(path):
         os.remove(path)
         return jsonify({"success": True})
     return jsonify({"error": "Fichier introuvable"}), 404
@@ -790,13 +852,13 @@ def delete_file(project_id, filename):
 @login_required
 @limiter.limit("10 per minute")
 def start_montage():
-    data = request.json
-    project_id = data["project_id"]
-    if not is_valid_uuid(project_id):
-        return jsonify({"error": "ID de projet invalide"}), 400
+    data = request.get_json(silent=True) or {}
+    project_id = data.get("project_id", "")
+    if not user_owns_project(project_id):
+        return jsonify({"error": "Non autorisé"}), 403
 
     # ── Analyse du prompt IA (Simulation NLP par mots-clés) ──
-    prompt = data.get("prompt", "").lower()
+    prompt = (data.get("prompt") or "").lower()
 
     style = data.get("style", "Normal (Équilibré)")
     format_out = data.get("format", "9:16")
@@ -894,8 +956,9 @@ def start_montage():
     music_path = music_files[0] if music_files else None
 
     # Créer l'entrée dans l'historique
-    projects = load_projects()
-    project_name = data.get("title", "").strip() or "Sans titre"
+    # Une régénération remplace l'entrée existante au lieu de créer un doublon
+    projects = [p for p in load_projects() if p["id"] != project_id]
+    project_name = (data.get("title") or "").strip() or "Sans titre"
     project = {
         "id": project_id,
         "user_id": current_user.id,
@@ -937,10 +1000,15 @@ def start_montage():
 @app.route("/api/progress/<project_id>")
 @login_required
 def get_progress(project_id):
-    if project_id in montage_progress:
-        return jsonify(montage_progress[project_id])
+    if not user_owns_project(project_id):
+        return jsonify({"error": "Non autorisé"}), 403
+    with progress_lock:
+        state = montage_progress.get(project_id)
+    if state:
+        return jsonify(state)
     return jsonify(
         {
+            "project_id": project_id,
             "status": "En attente...",
             "percent": 0,
             "done": False,
@@ -955,7 +1023,7 @@ def get_progress(project_id):
 def delete_project(project_id):
     if not is_valid_uuid(project_id):
         return jsonify({"error": "ID de projet invalide"}), 400
-        
+
     if not check_project_ownership(project_id):
         return jsonify({"error": "Non autorisé"}), 403
 
@@ -977,25 +1045,35 @@ def delete_project(project_id):
 @app.route("/outputs/<filename>")
 @login_required
 def serve_output(filename):
+    match = re.fullmatch(r"montage_([0-9a-f-]{36})\.mp4", filename)
+    if not match or not user_owns_project(match.group(1)):
+        abort(404)
     return send_from_directory(OUTPUT_FOLDER, filename, mimetype="video/mp4")
 
-
-# ─── Lancement ───────────────────────────────────────────────────
 
 @app.route("/api/save-settings", methods=["POST"])
 @login_required
 def save_settings():
-    data = request.json
+    data = request.get_json(silent=True)
     if not data:
         return jsonify({"error": "No data"}), 400
-    
-    if 'language' in data:
-        current_user.language = data['language']
-    if 'theme' in data:
-        current_user.theme = data['theme']
-        
+
+    if data.get("language") in {"fr", "en", "es", "zh", "de"}:
+        current_user.language = data["language"]
+    if isinstance(data.get("theme"), str) and re.fullmatch(r"[a-z-]{1,20}", data["theme"]):
+        current_user.theme = data["theme"]
+
     db.session.commit()
     return jsonify({"success": True})
 
+# ─── Lancement ───────────────────────────────────────────────────
+
 if __name__ == "__main__":
-    socketio.run(app, host="0.0.0.0", port=7860, debug=False)
+    # Serveur de développement local ; en production, utiliser Gunicorn (voir Dockerfile)
+    socketio.run(
+        app,
+        host="0.0.0.0",
+        port=int(os.environ.get("PORT", 7860)),
+        debug=False,
+        allow_unsafe_werkzeug=True,
+    )
