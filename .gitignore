@@ -26,3 +26,7 @@ outputs/
 *.mp4
 *.MOV
 *.mp3
+
+# Données locales de l'application
+instance/
+Mon_IA_Video/projects.json
